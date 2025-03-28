@@ -373,33 +373,6 @@ body::before {
     border-color: rgba(255, 255, 255, 0.05);
 }
 
-/* Ready to download button styles */
-.ready-to-download {
-    background-color: var(--deep-purple) !important;
-    color: white !important;
-    animation: pulse 1.5s infinite;
-    box-shadow: 0 0 15px rgba(184, 166, 217, 0.5);
-    border-color: var(--soft-lavender);
-}
-
-@keyframes pulse {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.05); }
-    100% { transform: scale(1); }
-}
-
-.file-ready-indicator {
-    color: var(--soft-lavender);
-    font-weight: bold;
-    margin-top: 5px;
-    font-size: 0.9rem;
-    text-align: center;
-    padding: 5px;
-    background-color: rgba(74, 46, 111, 0.1);
-    border-radius: 4px;
-    border: 1px solid rgba(184, 166, 217, 0.3);
-}
-
 .btn-icon {
     margin-right: 8px;
     font-size: 1.2rem;
@@ -508,6 +481,7 @@ body::before {
     box-shadow: 0 3px 10px rgba(0, 0, 0, 0.2);
     backdrop-filter: blur(15px);
     -webkit-backdrop-filter: blur(15px);
+    position: relative; /* Ensure position for tooltip */
 }
 
 .file-upload-btn:hover {
@@ -515,6 +489,22 @@ body::before {
     transform: translateY(-2px);
     box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
     border-color: rgba(255, 255, 255, 0.2);
+}
+
+.file-upload-btn:hover::after {
+    content: 'Send a file';
+    position: absolute;
+    bottom: -30px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(45, 45, 45, 0.9);
+    color: white;
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    z-index: 100;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
 }
 
 .file-upload-btn:disabled {
@@ -526,6 +516,10 @@ body::before {
     border-color: rgba(255, 255, 255, 0.05);
 }
 
+.file-upload-btn:disabled:hover::after {
+    content: 'Connect to send files';
+}
+
 .file-upload {
     position: absolute;
     top: 0;
@@ -534,10 +528,23 @@ body::before {
     height: 100%;
     opacity: 0;
     cursor: pointer;
+    z-index: -1; /* Hide behind the button to let the button handle clicks */
 }
 
 .file-upload:disabled {
     cursor: not-allowed;
+}
+
+/* File upload animation for GitHub Pages */
+@keyframes pulse-upload {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+
+.file-upload-btn.sending {
+    animation: pulse-upload 1.5s infinite;
+    background: rgba(74, 46, 111, 0.6);
 }
 
 .file-transfer-progress {
@@ -547,7 +554,7 @@ body::before {
     transform: translateX(-50%);
     width: 90%;
     max-width: 500px;
-    background-color: rgba(45, 45, 45, 0.8);
+    background-color: rgba(45, 45, 45, 0.9);
     border-radius: 15px;
     padding: 20px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
@@ -558,6 +565,12 @@ body::before {
     color: var(--dark-text);
     backdrop-filter: blur(15px);
     -webkit-backdrop-filter: blur(15px);
+    animation: slide-up 0.3s ease-out;
+}
+
+@keyframes slide-up {
+    from { transform: translate(-50%, 20px); opacity: 0; }
+    to { transform: translate(-50%, 0); opacity: 1; }
 }
 
 .progress-title {
@@ -565,6 +578,14 @@ body::before {
     font-size: 1.1rem;
     color: var(--soft-lavender);
     font-weight: bold;
+    display: flex;
+    align-items: center;
+}
+
+.progress-title::before {
+    content: '📤';
+    margin-right: 10px;
+    font-size: 1.3rem;
 }
 
 .progress-container {
@@ -573,6 +594,7 @@ body::before {
     border-radius: 6px;
     overflow: hidden;
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+    position: relative;
 }
 
 .progress-bar {
@@ -581,6 +603,36 @@ body::before {
     width: 0;
     transition: width 0.3s ease;
     border-radius: 6px;
+    position: relative;
+    overflow: hidden;
+}
+
+/* Add animated stripes for better visual feedback */
+.progress-bar::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-image: linear-gradient(
+        -45deg,
+        rgba(255, 255, 255, 0.2) 25%,
+        transparent 25%,
+        transparent 50%,
+        rgba(255, 255, 255, 0.2) 50%,
+        rgba(255, 255, 255, 0.2) 75%,
+        transparent 75%,
+        transparent
+    );
+    background-size: 30px 30px;
+    animation: progress-animation 1s linear infinite;
+    z-index: 1;
+}
+
+@keyframes progress-animation {
+    0% { background-position: 0 0; }
+    100% { background-position: 30px 0; }
 }
 
 .progress-text {
