@@ -713,41 +713,82 @@ function completeFileReceive(data) {
                 downloadBtn.classList.add('ready-to-download');
                 downloadBtn.innerHTML = `
                     <span class="btn-icon">⬇️</span>
-                    <span class="btn-text">Download Now</span>
+                    <span class="btn-text">DOWNLOAD NOW</span>
                 `;
 
                 // Add a visual indicator that the file is ready
                 const fileInfo = fileMessageEl.querySelector('.file-info');
                 if (fileInfo) {
+                    // Remove any existing indicator first
+                    const existingIndicator = fileInfo.querySelector('.file-ready-indicator');
+                    if (existingIndicator) {
+                        fileInfo.removeChild(existingIndicator);
+                    }
+
                     const readyIndicator = document.createElement('div');
                     readyIndicator.className = 'file-ready-indicator';
-                    readyIndicator.textContent = 'Ready to download';
+                    readyIndicator.innerHTML = '<span class="blink">⚠️ CLICK DOWNLOAD BUTTON TO SAVE FILE ⚠️</span>';
                     fileInfo.appendChild(readyIndicator);
                 }
 
                 // Add CSS for the ready-to-download button and indicator
-                const style = document.createElement('style');
-                style.textContent = `
-                    .ready-to-download {
-                        background-color: #4A2E6F !important;
-                        color: white !important;
-                        animation: pulse 1.5s infinite;
-                    }
+                const styleId = 'file-download-styles';
+                if (!document.getElementById(styleId)) {
+                    const style = document.createElement('style');
+                    style.id = styleId;
+                    style.textContent = `
+                        .ready-to-download {
+                            background-color: #4A2E6F !important;
+                            color: white !important;
+                            animation: pulse 1.5s infinite;
+                            font-weight: bold;
+                            padding: 8px 12px !important;
+                            font-size: 14px !important;
+                            border: 2px solid #ff9800 !important;
+                        }
 
-                    @keyframes pulse {
-                        0% { transform: scale(1); }
-                        50% { transform: scale(1.05); }
-                        100% { transform: scale(1); }
-                    }
+                        @keyframes pulse {
+                            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.7); }
+                            50% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(255, 152, 0, 0); }
+                            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 152, 0, 0); }
+                        }
 
-                    .file-ready-indicator {
-                        color: #4A2E6F;
-                        font-weight: bold;
-                        margin-top: 5px;
-                        font-size: 0.8rem;
-                    }
-                `;
-                document.head.appendChild(style);
+                        .file-ready-indicator {
+                            color: #ff5722;
+                            font-weight: bold;
+                            margin-top: 8px;
+                            font-size: 0.9rem;
+                            padding: 5px;
+                            background-color: #fff3e0;
+                            border-radius: 4px;
+                            border-left: 4px solid #ff9800;
+                            text-align: center;
+                        }
+
+                        .blink {
+                            animation: blink-animation 1s steps(5, start) infinite;
+                        }
+
+                        @keyframes blink-animation {
+                            to {
+                                visibility: hidden;
+                            }
+                        }
+
+                        /* Make the file message more noticeable */
+                        #file-${fileId} {
+                            border: 2px solid #ff9800 !important;
+                            background-color: #fff8e1 !important;
+                        }
+                    `;
+                    document.head.appendChild(style);
+                }
+
+                // Show a more prominent notification
+                showSystemMessage(`⚠️ File "${fileName}" received - CLICK DOWNLOAD BUTTON TO SAVE IT`);
+
+                // Scroll to the file message to make sure it's visible
+                fileMessageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
                 downloadBtn.onclick = function() {
                     // Get the stored file data
@@ -775,12 +816,32 @@ function completeFileReceive(data) {
                         addImagePreview(fileMessageEl, url, fileData.name);
                     }
 
-                    // Stop the animation after download starts
+                    // Update the button after download starts
                     this.classList.remove('ready-to-download');
                     this.innerHTML = `
-                        <span class="btn-icon">⬇️</span>
-                        <span class="btn-text">Download</span>
+                        <span class="btn-icon">✓</span>
+                        <span class="btn-text">Downloaded</span>
                     `;
+                    this.style.backgroundColor = '#4caf50';
+
+                    // Update the indicator
+                    const fileInfo = fileMessageEl.querySelector('.file-info');
+                    if (fileInfo) {
+                        const readyIndicator = fileInfo.querySelector('.file-ready-indicator');
+                        if (readyIndicator) {
+                            readyIndicator.innerHTML = '✓ File downloaded successfully';
+                            readyIndicator.style.color = '#4caf50';
+                            readyIndicator.style.borderLeftColor = '#4caf50';
+                            readyIndicator.style.backgroundColor = '#e8f5e9';
+                        }
+                    }
+
+                    // Remove the highlight from the message
+                    fileMessageEl.style.border = '';
+                    fileMessageEl.style.backgroundColor = '';
+
+                    // Show confirmation
+                    showSystemMessage(`✓ File "${fileName}" downloaded successfully`);
                 };
             }
         }
@@ -794,9 +855,6 @@ function completeFileReceive(data) {
 
         // Hide progress UI
         hideFileTransferProgress();
-
-        // Send a system message
-        showSystemMessage(`File "${fileName}" received`);
 
         // Send read receipt for the file
         if (activeConnection && activeConnection.open) {
@@ -958,14 +1016,73 @@ function escapeRegExp(string) {
 function showSystemMessage(message) {
     const messageEl = document.createElement('div');
     messageEl.className = 'message system';
+
+    // Check if this is a file-related message
+    const isFileMessage = message.includes('file') || message.includes('File');
+
+    // Add special styling for file-related messages
+    if (isFileMessage) {
+        messageEl.classList.add('file-system-message');
+    }
+
     messageEl.innerHTML = `
         <div class="message-content">
             <p>${message}</p>
         </div>
     `;
 
+    // Add CSS for system messages if not already added
+    const systemStyleId = 'system-message-styles';
+    if (!document.getElementById(systemStyleId)) {
+        const systemStyle = document.createElement('style');
+        systemStyle.id = systemStyleId;
+        systemStyle.textContent = `
+            .message.system {
+                background-color: #f5f5f5;
+                border-radius: 8px;
+                padding: 8px 12px;
+                margin: 10px auto;
+                max-width: 80%;
+                text-align: center;
+                font-style: italic;
+                color: #666;
+            }
+
+            .message.system.file-system-message {
+                background-color: #e8f5e9;
+                border-left: 4px solid #4caf50;
+                font-weight: bold;
+                color: #2e7d32;
+            }
+
+            .message.system.file-system-message p {
+                margin: 5px 0;
+            }
+        `;
+        document.head.appendChild(systemStyle);
+    }
+
     chatMessagesEl.appendChild(messageEl);
     scrollToBottom();
+
+    // If this is a file message, also show a browser notification
+    if (isFileMessage && 'Notification' in window) {
+        if (Notification.permission === 'granted') {
+            new Notification('SakhaSampark Chat', {
+                body: message,
+                icon: '../Login page/logo.png'
+            });
+        } else if (Notification.permission !== 'denied') {
+            Notification.requestPermission().then(permission => {
+                if (permission === 'granted') {
+                    new Notification('SakhaSampark Chat', {
+                        body: message,
+                        icon: '../Login page/logo.png'
+                    });
+                }
+            });
+        }
+    }
 }
 
 // Show an error message in the chat
@@ -1165,16 +1282,86 @@ function sendFile(file) {
 
 // Show file transfer progress UI
 function showFileTransferProgress(title, progress) {
+    // Add enhanced styling for file transfer progress
+    const progressStyleId = 'file-transfer-progress-styles';
+    if (!document.getElementById(progressStyleId)) {
+        const progressStyle = document.createElement('style');
+        progressStyle.id = progressStyleId;
+        progressStyle.textContent = `
+            .file-transfer-progress {
+                position: fixed;
+                bottom: 70px;
+                left: 50%;
+                transform: translateX(-50%);
+                background-color: #fff;
+                border-radius: 8px;
+                padding: 15px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                width: 80%;
+                max-width: 400px;
+                z-index: 1000;
+                border: 2px solid #4A2E6F;
+            }
+
+            .progress-title {
+                margin: 0 0 10px 0;
+                color: #4A2E6F;
+                font-weight: bold;
+                text-align: center;
+            }
+
+            .progress-container {
+                height: 20px;
+                background-color: #f0f0f0;
+                border-radius: 10px;
+                overflow: hidden;
+                margin-bottom: 5px;
+            }
+
+            .progress-bar {
+                height: 100%;
+                background-color: #4A2E6F;
+                width: 0%;
+                transition: width 0.3s ease;
+            }
+
+            .progress-text {
+                text-align: center;
+                font-weight: bold;
+                color: #4A2E6F;
+            }
+        `;
+        document.head.appendChild(progressStyle);
+    }
+
     fileTransferTitle.textContent = title;
     progressBar.style.width = `${progress}%`;
     progressText.textContent = `${progress}%`;
     fileTransferProgress.style.display = 'block';
+
+    // Show a system message about the file transfer
+    if (progress === 0) {
+        if (title.includes('Receiving')) {
+            showSystemMessage('📥 File transfer started - Please wait...');
+        } else {
+            showSystemMessage('📤 File transfer started - Please wait...');
+        }
+    }
 }
 
 // Update file transfer progress
 function updateFileTransferProgress(progress) {
     progressBar.style.width = `${progress}%`;
     progressText.textContent = `${progress}%`;
+
+    // Update the progress color based on completion percentage
+    if (progress > 75) {
+        progressBar.style.backgroundColor = '#4caf50'; // Green when almost done
+    } else if (progress > 40) {
+        progressBar.style.backgroundColor = '#2196f3'; // Blue for mid-progress
+    } else {
+        progressBar.style.backgroundColor = '#4A2E6F'; // Default purple for early progress
+    }
 }
 
 // Hide file transfer progress UI
@@ -1194,7 +1381,7 @@ function displayFileInfo(fileData, messageType) {
     }
 
     const messageEl = document.createElement('div');
-    messageEl.className = `message ${messageType}`;
+    messageEl.className = `message ${messageType} file-message-container`;
     messageEl.id = `file-${fileData.fileId}`;
 
     const timestamp = fileData.timestamp ? new Date(fileData.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
@@ -1204,6 +1391,104 @@ function displayFileInfo(fileData, messageType) {
 
     // Get appropriate file icon based on file type
     const fileIcon = getFileIcon(fileData.type, fileData.name);
+
+    // Add CSS for file messages if not already added
+    const fileStyleId = 'file-message-styles';
+    if (!document.getElementById(fileStyleId)) {
+        const fileStyle = document.createElement('style');
+        fileStyle.id = fileStyleId;
+        fileStyle.textContent = `
+            .file-message-container {
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                margin-bottom: 12px !important;
+            }
+
+            .file-message {
+                padding: 10px !important;
+            }
+
+            .file-info {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                background-color: #f5f5f5;
+                border-radius: 6px;
+                padding: 10px;
+                position: relative;
+            }
+
+            .file-icon {
+                font-size: 24px;
+                margin-right: 10px;
+                background-color: #e3f2fd;
+                width: 40px;
+                height: 40px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 4px;
+            }
+
+            .file-details {
+                flex: 1;
+                min-width: 150px;
+            }
+
+            .file-name {
+                font-weight: bold;
+                margin: 0 0 5px 0;
+                word-break: break-all;
+            }
+
+            .file-size {
+                color: #666;
+                margin: 0;
+                font-size: 0.8rem;
+            }
+
+            .download-btn {
+                background-color: #f0f0f0;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 10px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                margin-left: 10px;
+                transition: all 0.3s ease;
+            }
+
+            .download-btn:not([disabled]):hover {
+                background-color: #4A2E6F;
+                color: white;
+            }
+
+            .download-btn[disabled] {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+
+            .btn-icon {
+                margin-right: 5px;
+            }
+
+            @media (max-width: 600px) {
+                .file-info {
+                    flex-direction: column;
+                    align-items: flex-start;
+                }
+
+                .download-btn {
+                    margin-left: 0;
+                    margin-top: 10px;
+                    width: 100%;
+                    justify-content: center;
+                }
+            }
+        `;
+        document.head.appendChild(fileStyle);
+    }
 
     messageEl.innerHTML = `
         <div class="message-header">
@@ -1219,7 +1504,7 @@ function displayFileInfo(fileData, messageType) {
                 </div>
                 <button class="download-btn" ${messageType === 'outgoing' ? '' : 'disabled'}>
                     <span class="btn-icon">⬇️</span>
-                    <span class="btn-text">Download</span>
+                    <span class="btn-text">${messageType === 'incoming' ? 'Receiving...' : 'Download'}</span>
                 </button>
             </div>
         </div>
@@ -1229,6 +1514,11 @@ function displayFileInfo(fileData, messageType) {
     scrollToBottom();
 
     console.log(`File message created with ID: file-${fileData.fileId}`);
+
+    // If it's an incoming file, add a system message to make it more noticeable
+    if (messageType === 'incoming') {
+        showSystemMessage(`📥 Receiving file "${fileData.name}" (${formattedSize})`);
+    }
 
     // If it's an outgoing message, enable the download button immediately
     if (messageType === 'outgoing' && fileData._file) {
@@ -1269,6 +1559,14 @@ function displayFileInfo(fileData, messageType) {
                     // Add image preview
                     addImagePreview(this.closest('.message'), url, fileData.name);
                 }
+
+                // Update button text
+                this.innerHTML = `
+                    <span class="btn-icon">✓</span>
+                    <span class="btn-text">Downloaded</span>
+                `;
+                this.style.backgroundColor = '#4caf50';
+                this.style.color = 'white';
             };
         }
     }
