@@ -95,15 +95,24 @@ function initializePeer(username) {
     const serverOptions = [
         {
             // Default PeerJS cloud server
-            host: '0.peerjs.com',
+            host: 'peerjs.com',
             secure: true,
-            port: 443
+            port: 443,
+            path: '/'
         },
         {
             // Backup server option
             host: 'peerjs-server.herokuapp.com',
             secure: true,
-            port: 443
+            port: 443,
+            path: '/'
+        },
+        {
+            // Another backup option
+            host: '0.peerjs.com',
+            secure: true,
+            port: 443,
+            path: '/'
         },
         {
             // Last fallback - use local discovery only
@@ -111,7 +120,7 @@ function initializePeer(username) {
         }
     ];
 
-    // STUN/TURN server configuration
+    // Enhanced STUN/TURN server configuration for better connectivity
     const iceServers = {
         'iceServers': [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -119,8 +128,20 @@ function initializePeer(username) {
             { urls: 'stun:stun2.l.google.com:19302' },
             { urls: 'stun:stun3.l.google.com:19302' },
             { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:stun.stunprotocol.org:3478' },
+            { urls: 'stun:stun.voiparound.com:3478' },
             {
                 urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
                 username: 'openrelayproject',
                 credential: 'openrelayproject'
             }
@@ -406,31 +427,122 @@ function connectToPeer(peerId) {
 function handleConnection(conn) {
     // Store the connection
     activeConnection = conn;
-    
+
+    // Set up connection timeout for initial connection
+    const connectionOpenTimeout = setTimeout(() => {
+        if (conn && !conn.open) {
+            console.warn('Connection open event never fired, may be a stale connection');
+            // Don't update UI here as we might have another active connection
+            try {
+                conn.close();
+            } catch (e) {
+                console.warn('Error closing potentially stale connection:', e);
+            }
+        }
+    }, 15000); // 15 second timeout
+
     conn.on('open', () => {
+        clearTimeout(connectionOpenTimeout);
         console.log('Connection established with', conn.peer);
         updateConnectionStatus('online');
         enableChat();
-        
+
         // Send a greeting message
         showSystemMessage(`Connected to ${contactUsernameEl.textContent}`);
+
+        // Set up keepalive ping to maintain connection
+        // This is especially important for GitHub Pages hosting
+        setupConnectionKeepalive(conn);
     });
 
     conn.on('data', (data) => {
-        handleIncomingData(data);
+        // Reset connection activity timer on any data received
+        if (window.lastConnectionActivity) {
+            window.lastConnectionActivity = Date.now();
+        }
+
+        try {
+            handleIncomingData(data);
+        } catch (error) {
+            console.error('Error handling incoming data:', error);
+            // Don't show error to user for every message processing error
+        }
     });
 
     conn.on('close', () => {
         console.log('Connection closed');
         updateConnectionStatus('offline');
         disableChat();
+
+        // Clear any keepalive interval
+        if (window.keepaliveInterval) {
+            clearInterval(window.keepaliveInterval);
+            window.keepaliveInterval = null;
+        }
+
+        // Show a message
         showSystemMessage('Connection closed');
+
+        // Try to reconnect after a delay with exponential backoff
+        if (!window.reconnectAttempts) {
+            window.reconnectAttempts = 0;
+        }
+
+        const backoffTime = Math.min(30000, 2000 * Math.pow(1.5, window.reconnectAttempts));
+        window.reconnectAttempts++;
+
+        console.log(`Scheduling reconnection attempt ${window.reconnectAttempts} in ${backoffTime/1000} seconds`);
+
+        setTimeout(() => {
+            if (activeContactPeerId) {
+                console.log('Attempting to reconnect...');
+                showSystemMessage(`Reconnection attempt ${window.reconnectAttempts}...`);
+                connectToPeer(activeContactPeerId);
+            }
+        }, backoffTime);
     });
 
     conn.on('error', (err) => {
         console.error('Connection error:', err);
         updateConnectionStatus('offline');
-        showErrorMessage(`Connection error: ${err}`);
+        disableChat();
+
+        // Clear any keepalive interval
+        if (window.keepaliveInterval) {
+            clearInterval(window.keepaliveInterval);
+            window.keepaliveInterval = null;
+        }
+
+        // Show error message
+        let errorMsg = 'Connection error';
+        if (err.message) {
+            // Clean up error message for display
+            errorMsg = err.message.replace(/^Error:\s*/, '');
+            // Simplify common WebRTC errors
+            if (errorMsg.includes('ICE') || errorMsg.includes('network') ||
+                errorMsg.includes('transport') || errorMsg.includes('closed')) {
+                errorMsg = 'Network connection issue. This can happen with GitHub Pages hosting.';
+            }
+        }
+        showErrorMessage(errorMsg);
+
+        // Try to reconnect after a delay with exponential backoff
+        if (!window.reconnectAttempts) {
+            window.reconnectAttempts = 0;
+        }
+
+        const backoffTime = Math.min(30000, 2000 * Math.pow(1.5, window.reconnectAttempts));
+        window.reconnectAttempts++;
+
+        console.log(`Scheduling reconnection attempt ${window.reconnectAttempts} in ${backoffTime/1000} seconds`);
+
+        setTimeout(() => {
+            if (activeContactPeerId) {
+                console.log('Attempting to reconnect after error...');
+                showSystemMessage(`Reconnection attempt ${window.reconnectAttempts}...`);
+                connectToPeer(activeContactPeerId);
+            }
+        }, backoffTime);
     });
 }
 
@@ -510,35 +622,15 @@ function handleIncomingData(data) {
     } else if (data.type === 'file-info') {
         // File information before the actual file data
         console.log('Received file info:', data);
-
-        // Validate file info data
-        if (!data.fileId || !data.name || !data.size || !data.type) {
-            console.error('Invalid file info received:', data);
-            showErrorMessage('Invalid file information received');
-            return;
-        }
-
         displayFileInfo(data, 'incoming');
         // Hide typing indicator when file is received
         typingIndicator.style.display = 'none';
     } else if (data.type === 'file-data') {
         // File data chunks
-        if (!data.chunk || !data.fileId || !data.fileInfo) {
-            console.error('Invalid file chunk data received');
-            showErrorMessage('Invalid file data received');
-            return;
-        }
-
         console.log('Received file chunk, size:', data.chunk.byteLength);
         receiveFileChunk(data);
     } else if (data.type === 'file-complete') {
         // File transfer complete
-        if (!data.fileId) {
-            console.error('Invalid file-complete data received');
-            showErrorMessage('Invalid file completion data');
-            return;
-        }
-
         console.log('File transfer complete:', data.fileId);
         completeFileReceive(data);
     } else if (data.type === 'typing') {
@@ -617,11 +709,19 @@ function receiveFileChunk(data) {
                 throw new Error('Invalid file data received');
             }
 
+            // Check file size limit for GitHub Pages (recommend keeping under 50MB)
+            const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+            if (data.fileInfo.size > MAX_FILE_SIZE) {
+                throw new Error(`File is too large (${formatFileSize(data.fileInfo.size)}). Maximum size is ${formatFileSize(MAX_FILE_SIZE)}.`);
+            }
+
             receivingFile.inProgress = true;
             receivingFile.data = [];
             receivingFile.info = data.fileInfo;
             receivingFile.fileId = data.fileId;
             receivingFile.receivedSize = 0;
+            receivingFile.startTime = Date.now();
+            receivingFile.lastProgressUpdate = Date.now();
 
             // Show progress UI
             showFileTransferProgress('Receiving file...', 0);
@@ -639,8 +739,23 @@ function receiveFileChunk(data) {
 
         // Update progress
         const progress = Math.floor((receivingFile.receivedSize / receivingFile.info.size) * 100);
-        console.log(`File reception progress: ${progress}% (${receivingFile.receivedSize}/${receivingFile.info.size} bytes)`);
-        updateFileTransferProgress(progress);
+
+        // Only update UI every 100ms to avoid performance issues
+        const now = Date.now();
+        if (now - receivingFile.lastProgressUpdate > 100 || progress === 100) {
+            receivingFile.lastProgressUpdate = now;
+
+            console.log(`File reception progress: ${progress}% (${receivingFile.receivedSize}/${receivingFile.info.size} bytes)`);
+            updateFileTransferProgress(progress);
+
+            // Calculate and show transfer speed
+            const elapsedSeconds = (now - receivingFile.startTime) / 1000;
+            if (elapsedSeconds > 0) {
+                const bytesPerSecond = receivingFile.receivedSize / elapsedSeconds;
+                const speedText = formatFileSize(bytesPerSecond) + '/s';
+                document.getElementById('progressText').textContent = `${progress}% (${speedText})`;
+            }
+        }
     } catch (error) {
         console.error('Error processing file chunk:', error);
         showErrorMessage('Error processing file chunk: ' + error.message);
@@ -651,6 +766,8 @@ function receiveFileChunk(data) {
         receivingFile.info = null;
         receivingFile.fileId = null;
         receivingFile.receivedSize = 0;
+        receivingFile.startTime = null;
+        receivingFile.lastProgressUpdate = null;
 
         // Hide progress UI
         hideFileTransferProgress();
@@ -678,6 +795,8 @@ function completeFileReceive(data) {
         receivingFile.info = null;
         receivingFile.fileId = null;
         receivingFile.receivedSize = 0;
+        receivingFile.startTime = null;
+        receivingFile.lastProgressUpdate = null;
         return;
     }
 
@@ -689,8 +808,37 @@ function completeFileReceive(data) {
 
         // Combine all chunks
         console.log(`Creating blob from ${receivingFile.data.length} chunks, total size: ${receivingFile.receivedSize} bytes`);
-        const fileBlob = new Blob(receivingFile.data, { type: fileType });
-        console.log('File blob created, size:', fileBlob.size);
+
+        // Use try-catch specifically for blob creation which can fail in some browsers
+        let fileBlob;
+        try {
+            fileBlob = new Blob(receivingFile.data, { type: fileType });
+            console.log('File blob created, size:', fileBlob.size);
+
+            // Verify the blob size matches expected size
+            if (Math.abs(fileBlob.size - receivingFile.info.size) > 100) { // Allow small difference due to encoding
+                console.warn(`File size mismatch: expected ${receivingFile.info.size}, got ${fileBlob.size}`);
+            }
+        } catch (blobError) {
+            console.error('Error creating blob:', blobError);
+
+            // Try alternative approach for older browsers
+            try {
+                const BlobBuilder = window.BlobBuilder || window.WebKitBlobBuilder || window.MozBlobBuilder;
+                if (BlobBuilder) {
+                    const bb = new BlobBuilder();
+                    for (const chunk of receivingFile.data) {
+                        bb.append(chunk);
+                    }
+                    fileBlob = bb.getBlob(fileType);
+                    console.log('File blob created using BlobBuilder, size:', fileBlob.size);
+                } else {
+                    throw new Error('Blob creation not supported in this browser');
+                }
+            } catch (fallbackError) {
+                throw new Error(`Failed to create file: ${blobError.message}. Fallback also failed: ${fallbackError.message}`);
+            }
+        }
 
         // Store the blob in a global variable to prevent garbage collection
         if (!window.receivedFiles) {
@@ -699,7 +847,9 @@ function completeFileReceive(data) {
         window.receivedFiles[fileId] = {
             blob: fileBlob,
             name: fileName,
-            type: fileType
+            type: fileType,
+            size: fileBlob.size,
+            timestamp: Date.now()
         };
 
         // Update the file message with download link
@@ -708,88 +858,7 @@ function completeFileReceive(data) {
             console.log('Found file message element, enabling download button');
             const downloadBtn = fileMessageEl.querySelector('.download-btn');
             if (downloadBtn) {
-                // Make the download button more noticeable
                 downloadBtn.disabled = false;
-                downloadBtn.classList.add('ready-to-download');
-                downloadBtn.innerHTML = `
-                    <span class="btn-icon">⬇️</span>
-                    <span class="btn-text">DOWNLOAD NOW</span>
-                `;
-
-                // Add a visual indicator that the file is ready
-                const fileInfo = fileMessageEl.querySelector('.file-info');
-                if (fileInfo) {
-                    // Remove any existing indicator first
-                    const existingIndicator = fileInfo.querySelector('.file-ready-indicator');
-                    if (existingIndicator) {
-                        fileInfo.removeChild(existingIndicator);
-                    }
-
-                    const readyIndicator = document.createElement('div');
-                    readyIndicator.className = 'file-ready-indicator';
-                    readyIndicator.innerHTML = '<span class="blink">⚠️ CLICK DOWNLOAD BUTTON TO SAVE FILE ⚠️</span>';
-                    fileInfo.appendChild(readyIndicator);
-                }
-
-                // Add CSS for the ready-to-download button and indicator
-                const styleId = 'file-download-styles';
-                if (!document.getElementById(styleId)) {
-                    const style = document.createElement('style');
-                    style.id = styleId;
-                    style.textContent = `
-                        .ready-to-download {
-                            background-color: #4A2E6F !important;
-                            color: white !important;
-                            animation: pulse 1.5s infinite;
-                            font-weight: bold;
-                            padding: 8px 12px !important;
-                            font-size: 14px !important;
-                            border: 2px solid #ff9800 !important;
-                        }
-
-                        @keyframes pulse {
-                            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 152, 0, 0.7); }
-                            50% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(255, 152, 0, 0); }
-                            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 152, 0, 0); }
-                        }
-
-                        .file-ready-indicator {
-                            color: #ff5722;
-                            font-weight: bold;
-                            margin-top: 8px;
-                            font-size: 0.9rem;
-                            padding: 5px;
-                            background-color: #fff3e0;
-                            border-radius: 4px;
-                            border-left: 4px solid #ff9800;
-                            text-align: center;
-                        }
-
-                        .blink {
-                            animation: blink-animation 1s steps(5, start) infinite;
-                        }
-
-                        @keyframes blink-animation {
-                            to {
-                                visibility: hidden;
-                            }
-                        }
-
-                        /* Make the file message more noticeable */
-                        #file-${fileId} {
-                            border: 2px solid #ff9800 !important;
-                            background-color: #fff8e1 !important;
-                        }
-                    `;
-                    document.head.appendChild(style);
-                }
-
-                // Show a more prominent notification
-                showSystemMessage(`⚠️ File "${fileName}" received - CLICK DOWNLOAD BUTTON TO SAVE IT`);
-
-                // Scroll to the file message to make sure it's visible
-                fileMessageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
                 downloadBtn.onclick = function() {
                     // Get the stored file data
                     const fileData = window.receivedFiles[fileId];
@@ -799,52 +868,67 @@ function completeFileReceive(data) {
                         return;
                     }
 
-                    // Create download link
-                    const url = URL.createObjectURL(fileData.blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = fileData.name;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
+                    try {
+                        // Create download link
+                        const url = URL.createObjectURL(fileData.blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = fileData.name;
+                        document.body.appendChild(a);
+                        a.click();
 
-                    // Don't revoke URL if it's an image (we'll use it for preview)
-                    if (!fileData.type.startsWith('image/')) {
-                        URL.revokeObjectURL(url);
-                    } else {
-                        // Add image preview
-                        addImagePreview(fileMessageEl, url, fileData.name);
-                    }
+                        // Clean up
+                        setTimeout(() => {
+                            document.body.removeChild(a);
 
-                    // Update the button after download starts
-                    this.classList.remove('ready-to-download');
-                    this.innerHTML = `
-                        <span class="btn-icon">✓</span>
-                        <span class="btn-text">Downloaded</span>
-                    `;
-                    this.style.backgroundColor = '#4caf50';
+                            // Don't revoke URL if it's an image (we'll use it for preview)
+                            if (!fileData.type.startsWith('image/')) {
+                                URL.revokeObjectURL(url);
+                            } else {
+                                // Add image preview
+                                addImagePreview(fileMessageEl, url, fileData.name);
+                            }
+                        }, 100);
+                    } catch (downloadError) {
+                        console.error('Error downloading file:', downloadError);
+                        showErrorMessage(`Error downloading file: ${downloadError.message}`);
 
-                    // Update the indicator
-                    const fileInfo = fileMessageEl.querySelector('.file-info');
-                    if (fileInfo) {
-                        const readyIndicator = fileInfo.querySelector('.file-ready-indicator');
-                        if (readyIndicator) {
-                            readyIndicator.innerHTML = '✓ File downloaded successfully';
-                            readyIndicator.style.color = '#4caf50';
-                            readyIndicator.style.borderLeftColor = '#4caf50';
-                            readyIndicator.style.backgroundColor = '#e8f5e9';
+                        // Try alternative download method for GitHub Pages
+                        try {
+                            const reader = new FileReader();
+                            reader.onload = function(e) {
+                                const a = document.createElement('a');
+                                a.href = e.target.result;
+                                a.download = fileData.name;
+                                a.style.display = 'none';
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                            };
+                            reader.readAsDataURL(fileData.blob);
+                        } catch (altError) {
+                            console.error('Alternative download method failed:', altError);
+                            showErrorMessage('Download failed. Try again or ask the sender to resend the file.');
                         }
                     }
-
-                    // Remove the highlight from the message
-                    fileMessageEl.style.border = '';
-                    fileMessageEl.style.backgroundColor = '';
-
-                    // Show confirmation
-                    showSystemMessage(`✓ File "${fileName}" downloaded successfully`);
                 };
             }
+
+            // If it's an image, try to add preview immediately
+            if (fileType.startsWith('image/') && fileBlob.size < 5 * 1024 * 1024) { // Only for images under 5MB
+                try {
+                    const url = URL.createObjectURL(fileBlob);
+                    addImagePreview(fileMessageEl, url, fileName);
+                } catch (previewError) {
+                    console.warn('Could not create image preview:', previewError);
+                }
+            }
         }
+
+        // Calculate and show transfer stats
+        const totalTime = (Date.now() - receivingFile.startTime) / 1000;
+        const avgSpeed = formatFileSize(receivingFile.info.size / totalTime) + '/s';
+        console.log(`File transfer completed in ${totalTime.toFixed(1)}s at ${avgSpeed}`);
 
         // Reset file reception state
         receivingFile.inProgress = false;
@@ -852,17 +936,26 @@ function completeFileReceive(data) {
         receivingFile.info = null;
         receivingFile.fileId = null;
         receivingFile.receivedSize = 0;
+        receivingFile.startTime = null;
+        receivingFile.lastProgressUpdate = null;
 
         // Hide progress UI
         hideFileTransferProgress();
 
+        // Send a system message
+        showSystemMessage(`File "${fileName}" received (${formatFileSize(fileBlob.size)})`);
+
         // Send read receipt for the file
         if (activeConnection && activeConnection.open) {
-            activeConnection.send({
-                type: 'read-receipt',
-                messageId: `file-${fileId}`,
-                timestamp: Date.now()
-            });
+            try {
+                activeConnection.send({
+                    type: 'read-receipt',
+                    messageId: `file-${fileId}`,
+                    timestamp: Date.now()
+                });
+            } catch (receiptError) {
+                console.warn('Could not send read receipt:', receiptError);
+            }
         }
     } catch (error) {
         console.error('Error completing file reception:', error);
@@ -875,6 +968,8 @@ function completeFileReceive(data) {
         receivingFile.info = null;
         receivingFile.fileId = null;
         receivingFile.receivedSize = 0;
+        receivingFile.startTime = null;
+        receivingFile.lastProgressUpdate = null;
     }
 }
 
@@ -1016,73 +1111,14 @@ function escapeRegExp(string) {
 function showSystemMessage(message) {
     const messageEl = document.createElement('div');
     messageEl.className = 'message system';
-
-    // Check if this is a file-related message
-    const isFileMessage = message.includes('file') || message.includes('File');
-
-    // Add special styling for file-related messages
-    if (isFileMessage) {
-        messageEl.classList.add('file-system-message');
-    }
-
     messageEl.innerHTML = `
         <div class="message-content">
             <p>${message}</p>
         </div>
     `;
 
-    // Add CSS for system messages if not already added
-    const systemStyleId = 'system-message-styles';
-    if (!document.getElementById(systemStyleId)) {
-        const systemStyle = document.createElement('style');
-        systemStyle.id = systemStyleId;
-        systemStyle.textContent = `
-            .message.system {
-                background-color: #f5f5f5;
-                border-radius: 8px;
-                padding: 8px 12px;
-                margin: 10px auto;
-                max-width: 80%;
-                text-align: center;
-                font-style: italic;
-                color: #666;
-            }
-
-            .message.system.file-system-message {
-                background-color: #e8f5e9;
-                border-left: 4px solid #4caf50;
-                font-weight: bold;
-                color: #2e7d32;
-            }
-
-            .message.system.file-system-message p {
-                margin: 5px 0;
-            }
-        `;
-        document.head.appendChild(systemStyle);
-    }
-
     chatMessagesEl.appendChild(messageEl);
     scrollToBottom();
-
-    // If this is a file message, also show a browser notification
-    if (isFileMessage && 'Notification' in window) {
-        if (Notification.permission === 'granted') {
-            new Notification('SakhaSampark Chat', {
-                body: message,
-                icon: '../Login page/logo.png'
-            });
-        } else if (Notification.permission !== 'denied') {
-            Notification.requestPermission().then(permission => {
-                if (permission === 'granted') {
-                    new Notification('SakhaSampark Chat', {
-                        body: message,
-                        icon: '../Login page/logo.png'
-                    });
-                }
-            });
-        }
-    }
 }
 
 // Show an error message in the chat
@@ -1102,7 +1138,7 @@ function showErrorMessage(message) {
 // Update connection status
 function updateConnectionStatus(status) {
     connectionStatusEl.className = `status ${status}`;
-    
+
     switch (status) {
         case 'online':
             connectionStatusEl.textContent = 'Online';
@@ -1117,6 +1153,78 @@ function updateConnectionStatus(status) {
             disableChat();
             break;
     }
+}
+
+// Set up keepalive pings to maintain connection
+// This is especially important for GitHub Pages hosting
+function setupConnectionKeepalive(conn) {
+    // Clear any existing interval
+    if (window.keepaliveInterval) {
+        clearInterval(window.keepaliveInterval);
+    }
+
+    // Initialize last activity timestamp
+    window.lastConnectionActivity = Date.now();
+    window.lastPongTime = Date.now();
+
+    // Set up handler for pong responses
+    window.handlePongMessage = function() {
+        window.lastPongTime = Date.now();
+    };
+
+    // Send ping every 15 seconds to keep connection alive
+    window.keepaliveInterval = setInterval(() => {
+        if (conn && conn.open) {
+            try {
+                // Send ping message
+                conn.send({
+                    type: 'ping',
+                    timestamp: Date.now()
+                });
+                console.log('Ping sent');
+
+                // Check if we've received a pong recently
+                const pongTimeout = 30000; // 30 seconds
+                if (Date.now() - window.lastPongTime > pongTimeout) {
+                    console.warn('No pong received for 30 seconds, connection may be dead');
+                    updateConnectionStatus('connecting');
+                    showSystemMessage('Connection seems inactive. Checking status...');
+
+                    // After another 15 seconds, if still no pong, consider connection dead
+                    setTimeout(() => {
+                        if (Date.now() - window.lastPongTime > pongTimeout + 15000) {
+                            console.error('Connection appears to be dead, forcing reconnect');
+                            updateConnectionStatus('offline');
+
+                            // Force close and reconnect
+                            try {
+                                conn.close();
+                            } catch (e) {
+                                console.warn('Error closing dead connection:', e);
+                            }
+
+                            // Reset reconnect attempts to start fresh
+                            window.reconnectAttempts = 0;
+
+                            // Try to reconnect
+                            if (activeContactPeerId) {
+                                showSystemMessage('Connection lost. Reconnecting...');
+                                setTimeout(() => {
+                                    connectToPeer(activeContactPeerId);
+                                }, 1000);
+                            }
+                        }
+                    }, 15000);
+                }
+            } catch (error) {
+                console.error('Error sending keepalive ping:', error);
+            }
+        } else {
+            // Clear interval if connection is closed
+            clearInterval(window.keepaliveInterval);
+            window.keepaliveInterval = null;
+        }
+    }, 15000); // 15 seconds
 }
 
 // Enable chat input
@@ -1147,10 +1255,17 @@ function sendFile(file) {
         return;
     }
 
+    // Check file size limit for GitHub Pages (recommend keeping under 50MB)
+    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+    if (file.size > MAX_FILE_SIZE) {
+        showErrorMessage(`File is too large (${formatFileSize(file.size)}). Maximum size is ${formatFileSize(MAX_FILE_SIZE)}.`);
+        return;
+    }
+
     console.log('Starting file send process for:', file.name, 'size:', file.size, 'type:', file.type);
 
-    // Generate a unique file ID
-    const fileId = Date.now().toString();
+    // Generate a unique file ID with random component to avoid collisions
+    const fileId = Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9);
 
     // Display file in chat
     displayFileInfo({
@@ -1158,35 +1273,58 @@ function sendFile(file) {
         name: file.name,
         size: file.size,
         type: file.type,
-        _file: file  // Store the file object for local downloads
+        _file: file,  // Store the file object for local downloads
+        timestamp: Date.now()
     }, 'outgoing');
 
     // Send file info to peer
     console.log('Sending file-info to peer');
-    activeConnection.send({
-        type: 'file-info',
-        fileId,
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        timestamp: Date.now()
-    });
+    try {
+        activeConnection.send({
+            type: 'file-info',
+            fileId,
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            timestamp: Date.now()
+        });
+    } catch (error) {
+        console.error('Error sending file info:', error);
+        showErrorMessage(`Failed to initiate file transfer: ${error.message}`);
+        return;
+    }
 
     // Show progress UI
     showFileTransferProgress('Sending file...', 0);
 
     // Add a small delay to ensure the file-info message is processed first
     setTimeout(() => {
-        // Read file and send in chunks
-        const chunkSize = 16384; // 16KB chunks
+        // Optimize chunk size based on file size
+        // Smaller files use smaller chunks for faster transfer start
+        // Larger files use larger chunks for better throughput
+        let chunkSize;
+        if (file.size < 1024 * 1024) { // < 1MB
+            chunkSize = 8192; // 8KB chunks
+        } else if (file.size < 5 * 1024 * 1024) { // < 5MB
+            chunkSize = 16384; // 16KB chunks
+        } else {
+            chunkSize = 32768; // 32KB chunks
+        }
+
         const reader = new FileReader();
         let offset = 0;
         let chunkCount = 0;
+        let lastProgressUpdate = Date.now();
+        let transferStartTime = Date.now();
+        let transferFailed = false;
 
         reader.onload = (e) => {
-            if (!activeConnection.open) {
-                hideFileTransferProgress();
-                showErrorMessage('Connection closed while sending file');
+            if (!activeConnection || !activeConnection.open) {
+                if (!transferFailed) {
+                    transferFailed = true;
+                    hideFileTransferProgress();
+                    showErrorMessage('Connection closed while sending file');
+                }
                 return;
             }
 
@@ -1207,69 +1345,117 @@ function sendFile(file) {
                 // Update progress
                 offset += e.target.result.byteLength;
                 const progress = Math.floor((offset / file.size) * 100);
-                updateFileTransferProgress(progress);
+
+                // Only update UI every 100ms to avoid performance issues
+                const now = Date.now();
+                if (now - lastProgressUpdate > 100 || progress === 100) {
+                    lastProgressUpdate = now;
+                    updateFileTransferProgress(progress);
+
+                    // Calculate and show transfer speed
+                    const elapsedSeconds = (now - transferStartTime) / 1000;
+                    if (elapsedSeconds > 0) {
+                        const bytesPerSecond = offset / elapsedSeconds;
+                        const speedText = formatFileSize(bytesPerSecond) + '/s';
+                        document.getElementById('progressText').textContent = `${progress}% (${speedText})`;
+                    }
+                }
 
                 // Continue with next chunk or complete
                 if (offset < file.size) {
-                    // Add a small delay between chunks to prevent overwhelming the connection
-                    setTimeout(readNextChunk, 10);
+                    // Adaptive delay based on connection quality
+                    // If we're sending quickly, reduce delay to improve speed
+                    const chunkDelay = chunkCount % 10 === 0 ? 50 : 10; // Longer pause every 10 chunks
+                    setTimeout(readNextChunk, chunkDelay);
                 } else {
                     console.log('File sending complete, waiting before sending completion message');
                     // Add a small delay before sending completion message to ensure all chunks are processed
                     setTimeout(() => {
-                        console.log('Sending file-complete message');
-                        activeConnection.send({
-                            type: 'file-complete',
-                            fileId,
-                            timestamp: Date.now()
-                        });
-                    }, 1000); // Wait 1 second before sending completion message
+                        if (activeConnection && activeConnection.open) {
+                            console.log('Sending file-complete message');
+                            try {
+                                activeConnection.send({
+                                    type: 'file-complete',
+                                    fileId,
+                                    timestamp: Date.now()
+                                });
 
-                    // Enable download button for sender too
-                    const fileMessageEl = document.getElementById(`file-${fileId}`);
-                    if (fileMessageEl) {
-                        const downloadBtn = fileMessageEl.querySelector('.download-btn');
-                        if (downloadBtn) {
-                            downloadBtn.disabled = false;
-                            downloadBtn.onclick = () => {
-                                // Create download link
-                                const url = URL.createObjectURL(file);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = file.name;
-                                document.body.appendChild(a);
-                                a.click();
-                                document.body.removeChild(a);
-                                URL.revokeObjectURL(url);
-                            };
+                                // Enable download button for sender too
+                                const fileMessageEl = document.getElementById(`file-${fileId}`);
+                                if (fileMessageEl) {
+                                    const downloadBtn = fileMessageEl.querySelector('.download-btn');
+                                    if (downloadBtn) {
+                                        downloadBtn.disabled = false;
+                                        downloadBtn.onclick = () => {
+                                            // Create download link
+                                            const url = URL.createObjectURL(file);
+                                            const a = document.createElement('a');
+                                            a.href = url;
+                                            a.download = file.name;
+                                            document.body.appendChild(a);
+                                            a.click();
+                                            document.body.removeChild(a);
+
+                                            // Don't revoke URL if it's an image (we'll use it for preview)
+                                            if (!file.type.startsWith('image/')) {
+                                                URL.revokeObjectURL(url);
+                                            } else {
+                                                // Add image preview
+                                                addImagePreview(fileMessageEl, url, file.name);
+                                            }
+                                        };
+                                    }
+                                }
+
+                                // Add a success message
+                                showSystemMessage(`File "${file.name}" sent successfully`);
+
+                                // Calculate and show transfer stats
+                                const totalTime = (Date.now() - transferStartTime) / 1000;
+                                const avgSpeed = formatFileSize(file.size / totalTime) + '/s';
+                                console.log(`File transfer completed in ${totalTime.toFixed(1)}s at ${avgSpeed}`);
+                            } catch (error) {
+                                console.error('Error sending file completion message:', error);
+                                showErrorMessage(`File sent but completion notification failed: ${error.message}`);
+                            }
+                        } else {
+                            showErrorMessage('Connection closed before file transfer could complete');
                         }
-                    }
 
-                    // Add a success message
-                    showSystemMessage(`File "${file.name}" sent successfully`);
-
-                    // Hide progress UI
-                    hideFileTransferProgress();
+                        // Hide progress UI
+                        hideFileTransferProgress();
+                    }, 1000); // Wait 1 second before sending completion message
                 }
             } catch (error) {
                 console.error('Error sending file chunk:', error);
-                hideFileTransferProgress();
-                showErrorMessage(`Error sending file: ${error.message}`);
+                if (!transferFailed) {
+                    transferFailed = true;
+                    hideFileTransferProgress();
+                    showErrorMessage(`Error sending file: ${error.message}`);
+                }
             }
         };
 
         reader.onerror = (error) => {
             console.error('Error reading file:', error);
-            hideFileTransferProgress();
-            showErrorMessage('Error reading file');
+            if (!transferFailed) {
+                transferFailed = true;
+                hideFileTransferProgress();
+                showErrorMessage('Error reading file');
+            }
         };
 
         function readNextChunk() {
+            if (transferFailed || !activeConnection || !activeConnection.open) {
+                return;
+            }
+
             try {
                 const slice = file.slice(offset, offset + chunkSize);
                 reader.readAsArrayBuffer(slice);
             } catch (error) {
                 console.error('Error reading file chunk:', error);
+                transferFailed = true;
                 hideFileTransferProgress();
                 showErrorMessage(`Error reading file chunk: ${error.message}`);
             }
@@ -1282,86 +1468,16 @@ function sendFile(file) {
 
 // Show file transfer progress UI
 function showFileTransferProgress(title, progress) {
-    // Add enhanced styling for file transfer progress
-    const progressStyleId = 'file-transfer-progress-styles';
-    if (!document.getElementById(progressStyleId)) {
-        const progressStyle = document.createElement('style');
-        progressStyle.id = progressStyleId;
-        progressStyle.textContent = `
-            .file-transfer-progress {
-                position: fixed;
-                bottom: 70px;
-                left: 50%;
-                transform: translateX(-50%);
-                background-color: #fff;
-                border-radius: 8px;
-                padding: 15px;
-                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-                width: 80%;
-                max-width: 400px;
-                z-index: 1000;
-                border: 2px solid #4A2E6F;
-            }
-
-            .progress-title {
-                margin: 0 0 10px 0;
-                color: #4A2E6F;
-                font-weight: bold;
-                text-align: center;
-            }
-
-            .progress-container {
-                height: 20px;
-                background-color: #f0f0f0;
-                border-radius: 10px;
-                overflow: hidden;
-                margin-bottom: 5px;
-            }
-
-            .progress-bar {
-                height: 100%;
-                background-color: #4A2E6F;
-                width: 0%;
-                transition: width 0.3s ease;
-            }
-
-            .progress-text {
-                text-align: center;
-                font-weight: bold;
-                color: #4A2E6F;
-            }
-        `;
-        document.head.appendChild(progressStyle);
-    }
-
     fileTransferTitle.textContent = title;
     progressBar.style.width = `${progress}%`;
     progressText.textContent = `${progress}%`;
     fileTransferProgress.style.display = 'block';
-
-    // Show a system message about the file transfer
-    if (progress === 0) {
-        if (title.includes('Receiving')) {
-            showSystemMessage('📥 File transfer started - Please wait...');
-        } else {
-            showSystemMessage('📤 File transfer started - Please wait...');
-        }
-    }
 }
 
 // Update file transfer progress
 function updateFileTransferProgress(progress) {
     progressBar.style.width = `${progress}%`;
     progressText.textContent = `${progress}%`;
-
-    // Update the progress color based on completion percentage
-    if (progress > 75) {
-        progressBar.style.backgroundColor = '#4caf50'; // Green when almost done
-    } else if (progress > 40) {
-        progressBar.style.backgroundColor = '#2196f3'; // Blue for mid-progress
-    } else {
-        progressBar.style.backgroundColor = '#4A2E6F'; // Default purple for early progress
-    }
 }
 
 // Hide file transfer progress UI
@@ -1381,7 +1497,7 @@ function displayFileInfo(fileData, messageType) {
     }
 
     const messageEl = document.createElement('div');
-    messageEl.className = `message ${messageType} file-message-container`;
+    messageEl.className = `message ${messageType}`;
     messageEl.id = `file-${fileData.fileId}`;
 
     const timestamp = fileData.timestamp ? new Date(fileData.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
@@ -1391,104 +1507,6 @@ function displayFileInfo(fileData, messageType) {
 
     // Get appropriate file icon based on file type
     const fileIcon = getFileIcon(fileData.type, fileData.name);
-
-    // Add CSS for file messages if not already added
-    const fileStyleId = 'file-message-styles';
-    if (!document.getElementById(fileStyleId)) {
-        const fileStyle = document.createElement('style');
-        fileStyle.id = fileStyleId;
-        fileStyle.textContent = `
-            .file-message-container {
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-bottom: 12px !important;
-            }
-
-            .file-message {
-                padding: 10px !important;
-            }
-
-            .file-info {
-                display: flex;
-                flex-wrap: wrap;
-                align-items: center;
-                background-color: #f5f5f5;
-                border-radius: 6px;
-                padding: 10px;
-                position: relative;
-            }
-
-            .file-icon {
-                font-size: 24px;
-                margin-right: 10px;
-                background-color: #e3f2fd;
-                width: 40px;
-                height: 40px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                border-radius: 4px;
-            }
-
-            .file-details {
-                flex: 1;
-                min-width: 150px;
-            }
-
-            .file-name {
-                font-weight: bold;
-                margin: 0 0 5px 0;
-                word-break: break-all;
-            }
-
-            .file-size {
-                color: #666;
-                margin: 0;
-                font-size: 0.8rem;
-            }
-
-            .download-btn {
-                background-color: #f0f0f0;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 10px;
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                margin-left: 10px;
-                transition: all 0.3s ease;
-            }
-
-            .download-btn:not([disabled]):hover {
-                background-color: #4A2E6F;
-                color: white;
-            }
-
-            .download-btn[disabled] {
-                opacity: 0.5;
-                cursor: not-allowed;
-            }
-
-            .btn-icon {
-                margin-right: 5px;
-            }
-
-            @media (max-width: 600px) {
-                .file-info {
-                    flex-direction: column;
-                    align-items: flex-start;
-                }
-
-                .download-btn {
-                    margin-left: 0;
-                    margin-top: 10px;
-                    width: 100%;
-                    justify-content: center;
-                }
-            }
-        `;
-        document.head.appendChild(fileStyle);
-    }
 
     messageEl.innerHTML = `
         <div class="message-header">
@@ -1504,7 +1522,7 @@ function displayFileInfo(fileData, messageType) {
                 </div>
                 <button class="download-btn" ${messageType === 'outgoing' ? '' : 'disabled'}>
                     <span class="btn-icon">⬇️</span>
-                    <span class="btn-text">${messageType === 'incoming' ? 'Receiving...' : 'Download'}</span>
+                    <span class="btn-text">Download</span>
                 </button>
             </div>
         </div>
@@ -1514,11 +1532,6 @@ function displayFileInfo(fileData, messageType) {
     scrollToBottom();
 
     console.log(`File message created with ID: file-${fileData.fileId}`);
-
-    // If it's an incoming file, add a system message to make it more noticeable
-    if (messageType === 'incoming') {
-        showSystemMessage(`📥 Receiving file "${fileData.name}" (${formattedSize})`);
-    }
 
     // If it's an outgoing message, enable the download button immediately
     if (messageType === 'outgoing' && fileData._file) {
@@ -1559,14 +1572,6 @@ function displayFileInfo(fileData, messageType) {
                     // Add image preview
                     addImagePreview(this.closest('.message'), url, fileData.name);
                 }
-
-                // Update button text
-                this.innerHTML = `
-                    <span class="btn-icon">✓</span>
-                    <span class="btn-text">Downloaded</span>
-                `;
-                this.style.backgroundColor = '#4caf50';
-                this.style.color = 'white';
             };
         }
     }
@@ -1624,31 +1629,58 @@ function setupEventListeners() {
     messageInput.addEventListener('input', () => {
         if (activeConnection && activeConnection.open) {
             // Send typing indicator
-            activeConnection.send({
-                type: 'typing',
-                isTyping: true
-            });
+            try {
+                activeConnection.send({
+                    type: 'typing',
+                    isTyping: true
+                });
 
-            // Clear previous timeout
-            clearTimeout(typingTimeout);
+                // Clear previous timeout
+                clearTimeout(typingTimeout);
 
-            // Set timeout to send stopped typing after 2 seconds of inactivity
-            typingTimeout = setTimeout(() => {
-                if (activeConnection && activeConnection.open) {
-                    activeConnection.send({
-                        type: 'typing',
-                        isTyping: false
-                    });
-                }
-            }, 2000);
+                // Set timeout to send stopped typing after 2 seconds of inactivity
+                typingTimeout = setTimeout(() => {
+                    if (activeConnection && activeConnection.open) {
+                        activeConnection.send({
+                            type: 'typing',
+                            isTyping: false
+                        });
+                    }
+                }, 2000);
+            } catch (error) {
+                console.warn('Error sending typing indicator:', error);
+                // Don't show error to user as this is non-critical
+            }
         }
     });
+
+    // Handle file upload button click - make it work even when the input is disabled
+    const fileUploadBtn = document.querySelector('.file-upload-btn');
+    if (fileUploadBtn) {
+        fileUploadBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            // Only trigger file selection if we have an active connection
+            if (activeConnection && activeConnection.open) {
+                fileUpload.click();
+            } else {
+                showErrorMessage('Cannot send files: No active connection');
+            }
+        });
+    }
 
     // Handle file upload
     fileUpload.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (file) {
-            sendFile(file);
+            // Check if connection is still active
+            if (activeConnection && activeConnection.open) {
+                // Validate file before sending
+                if (validateFileForTransfer(file)) {
+                    sendFile(file);
+                }
+            } else {
+                showErrorMessage('Cannot send file: Connection lost');
+            }
             // Reset file input
             fileUpload.value = '';
         }
@@ -1656,6 +1688,8 @@ function setupEventListeners() {
 
     // Back to contacts button
     backToContactsBtn.addEventListener('click', () => {
+        // Clean up before navigating away
+        cleanupBeforeNavigation();
         window.location.href = '../Conncetions Page/connections.html';
     });
 
@@ -1666,15 +1700,8 @@ function setupEventListeners() {
             Loader.show();
         }
 
-        // Close peer connection if exists
-        if (currentPeer) {
-            currentPeer.destroy();
-        }
-
-        // Close active connection if exists
-        if (activeConnection && activeConnection.open) {
-            activeConnection.close();
-        }
+        // Clean up connections
+        cleanupBeforeNavigation();
 
         // Clear any session storage data
         sessionStorage.clear();
@@ -1691,10 +1718,13 @@ function setupEventListeners() {
         });
     });
 
-    // Add drag and drop file upload
+    // Add drag and drop file upload with better error handling for GitHub Pages
     chatMessagesEl.addEventListener('dragover', (e) => {
         e.preventDefault();
-        chatMessagesEl.classList.add('drag-over');
+        // Only show drag effect if we have an active connection
+        if (activeConnection && activeConnection.open) {
+            chatMessagesEl.classList.add('drag-over');
+        }
     });
 
     chatMessagesEl.addEventListener('dragleave', () => {
@@ -1705,11 +1735,115 @@ function setupEventListeners() {
         e.preventDefault();
         chatMessagesEl.classList.remove('drag-over');
 
+        // Check if connection is active before accepting files
+        if (!activeConnection || !activeConnection.open) {
+            showErrorMessage('Cannot send files: No active connection');
+            return;
+        }
+
         if (e.dataTransfer.files.length > 0) {
             const file = e.dataTransfer.files[0];
-            sendFile(file);
+            if (validateFileForTransfer(file)) {
+                sendFile(file);
+            }
         }
     });
+
+    // Add window beforeunload event to clean up resources
+    window.addEventListener('beforeunload', cleanupBeforeNavigation);
+
+    // Add visibility change handler to manage connection when tab is hidden/visible
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            console.log('Tab is now visible, checking connection status');
+            // Check connection status when tab becomes visible again
+            if (activeConnection && !activeConnection.open) {
+                updateConnectionStatus('offline');
+                showSystemMessage('Connection lost while tab was inactive. Attempting to reconnect...');
+
+                // Try to reconnect
+                if (activeContactPeerId) {
+                    setTimeout(() => {
+                        connectToPeer(activeContactPeerId);
+                    }, 1000);
+                }
+            }
+        }
+    });
+}
+
+// Validate file before transfer
+function validateFileForTransfer(file) {
+    // Check file size limit for GitHub Pages (recommend keeping under 50MB)
+    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+    if (file.size > MAX_FILE_SIZE) {
+        showErrorMessage(`File is too large (${formatFileSize(file.size)}). Maximum size is ${formatFileSize(MAX_FILE_SIZE)}.`);
+        return false;
+    }
+
+    // Check for zero-byte files
+    if (file.size === 0) {
+        showErrorMessage('Cannot send empty file');
+        return false;
+    }
+
+    // Check for file name issues
+    if (!file.name || file.name.length > 255) {
+        showErrorMessage('Invalid file name');
+        return false;
+    }
+
+    return true;
+}
+
+// Clean up connections and resources before navigating away
+function cleanupBeforeNavigation() {
+    console.log('Cleaning up before navigation');
+
+    // Close peer connection if exists
+    if (currentPeer) {
+        try {
+            currentPeer.destroy();
+        } catch (e) {
+            console.warn('Error destroying peer:', e);
+        }
+        currentPeer = null;
+    }
+
+    // Close active connection if exists
+    if (activeConnection && activeConnection.open) {
+        try {
+            activeConnection.close();
+        } catch (e) {
+            console.warn('Error closing connection:', e);
+        }
+        activeConnection = null;
+    }
+
+    // Clean up any file transfer in progress
+    if (receivingFile.inProgress) {
+        receivingFile.inProgress = false;
+        receivingFile.data = [];
+        receivingFile.info = null;
+        receivingFile.fileId = null;
+        receivingFile.receivedSize = 0;
+        receivingFile.startTime = null;
+        receivingFile.lastProgressUpdate = null;
+    }
+
+    // Hide any progress UI
+    hideFileTransferProgress();
+
+    // Revoke any object URLs to prevent memory leaks
+    if (window.receivedFiles) {
+        for (const fileId in window.receivedFiles) {
+            try {
+                URL.revokeObjectURL(window.receivedFiles[fileId].url);
+            } catch (e) {
+                // Ignore errors here
+            }
+        }
+    }
 }
 
 // Check connection status and reconnect if needed
